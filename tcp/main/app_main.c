@@ -42,6 +42,8 @@
 #define PELOTA_POS_X 4
 #define PELOTA_POS_Y 5
 #define GAME_STATUS_INDEX 6
+#define GAME_ON_FLAG 1
+#define GAME_OFF_FLAG 0
 
 typedef struct
 {
@@ -199,7 +201,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         msg_id = esp_mqtt_client_subscribe(client, gameTopic, 0);
         // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
         //  login to game
-        snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
+        snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d, %d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_OFF_FLAG);
         msg_id = esp_mqtt_client_publish(client, sesionTopic, messageBuffer, 0, 0, 0);
 
         break;
@@ -212,32 +214,26 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         if (!strcmp(topic_buffer, gameTopic))
         {
             ESP_LOGI(TAG, "%s", data_payload[0]);
-            if (!strcmp(data_payload[0], "GAMEON"))
+            if (atoi(data_payload[GAME_STATUS_INDEX]) == GAME_ON_FLAG)
             {
                 gameOnFlag = true;
             }
 
-            if (strcmp(data_payload[NAME_INDEX], me.name))
+            if(atoi(data_payload[GAME_STATUS_INDEX]) == GAME_OFF_FLAG)
             {
-                rival.posRaqueta = atoi(data_payload[RAQUETA_POS_INDEX]);
-                rival.puntos = atoi(data_payload[POINTS_INDEX]);
-                rival.pelotaX = atoi(data_payload[PELOTA_POS_X]);
-                rival.pelotaY = atoi(data_payload[PELOTA_POS_Y]);
+                gameOnFlag = false;
             }
 
-            // free(data_payload[NAME_INDEX]); // Liberar la memoria de cada palabra
-            // free(data_payload[RAQUETA_POS_INDEX]);
-            // free(data_payload[POINTS_INDEX]);
-            // free(data_payload[PELOTA_POS_X]);
-            // free(data_payload[PELOTA_POS_Y]);
+
         }
 
         if (!strcmp(topic_buffer, sesionTopic))
         {
             if (!strcmp(data_payload[LOGIN_STATE_INDEX], "ON") && strcmp(data_payload[NAME_INDEX], me.name))
             {
-                
                 ESP_LOGI(TAG, "Rival connected: %s", data_payload[NAME_INDEX]);
+                snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
+                msg_id = esp_mqtt_client_publish(client, sesionTopic, messageBuffer, 0, 0, 0);
             }
             // si es que el otro jugador cierra sesion decrementa el numero de jugadores
             if (!strcmp(data_payload[LOGIN_STATE_INDEX], "OFF"))
@@ -310,7 +306,7 @@ void vTaskGameboard()
             //      printf("Voltage: %.2fV\n", voltage);
 
             snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
-            msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 1, 0);
+            msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 0, 0);
         }
         vTaskDelay(500 / portTICK_PERIOD_MS);
     }
