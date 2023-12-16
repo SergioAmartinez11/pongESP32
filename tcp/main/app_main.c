@@ -18,30 +18,50 @@
 #include "esp_netif.h"
 #include "protocol_examples_common.h"
 #include "driver/uart.h"
+#include "driver/adc.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 
+#include "driver/gpio.h"
+
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
+#include "myUart.h"
 
 #define BOARD_LEN 8
+#define NAME_INDEX 0
+#define LOGIN_STATE_INDEX 1
+#define RAQUETA_POS_INDEX 2
+#define POINTS_INDEX 3
+#define PELOTA_POS_X 4
+#define PELOTA_POS_Y 5
+#define GAME_STATUS_INDEX 6
+
+typedef struct
+{
+    char name[50];
+    char state[10];
+    int posRaqueta;
+    int puntos;
+    int pelotaX;
+    int pelotaY;
+} player_data_t;
 
 static const char *TAG = "MQTT_EXAMPLE";
 char *sesionTopic = "v1/playersOnline";
 char *gameTopic = "v1/gaming";
 int gameBoard[BOARD_LEN][BOARD_LEN];
-int raquetaPosY = 1;
-int raquetaPosX = 0;
-int puntos = 0;
 bool gameOnFlag = false;
-char *playerName = "playerA";
 int playersOnline = 0;
+
+player_data_t me = {"playerA", "ON", 1, 0, 0, 0};
+player_data_t rival;
 
 TaskHandle_t vTaskGameboard_handler = NULL;
 
@@ -50,56 +70,61 @@ TaskHandle_t vTaskGameboard_handler = NULL;
 QueueHandle_t uart0_queue;
 esp_mqtt_client_handle_t client;
 
-void uart_event_task(void *pvParameters)
-{
-    uart_event_t event;
-    size_t buffered_size;
-    uint8_t *dtmp = (uint8_t *)malloc(BUF_SIZE);
-    for (;;)
-    {
-        // Waiting for UART event.
-        if (xQueueReceive(uart0_queue, (void *)&event, (TickType_t)portMAX_DELAY))
-        {
-            bzero(dtmp, BUF_SIZE);
-            // Check for UART data.
-            if (event.type == UART_DATA)
-            {
-                uart_read_bytes(UART_NUM, dtmp, event.size, portMAX_DELAY);
-                // Process the received data here.
-                ESP_LOGI(TAG, "Read from UART: %s\n", dtmp);
-            }
-        }
-    }
-    free(dtmp);
-    dtmp = NULL;
-    vTaskDelete(NULL);
-}
+#define ADC_CHANNEL ADC1_CHANNEL_0
 
-void configure_uart()
-{
-    uart_config_t uart_config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
+#define BUTTON_GPIO_12 GPIO_NUM_12
+#define BUTTON_GPIO_13 GPIO_NUM_13
 
-    // Install UART driver.
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+// void uart_event_task(void *pvParameters)
+// {
+//     uart_event_t event;
+//     size_t buffered_size;
+//     uint8_t *dtmp = (uint8_t *)malloc(BUF_SIZE);
+//     for (;;)
+//     {
+//         // Waiting for UART event.
+//         if (xQueueReceive(uart0_queue, (void *)&event, (TickType_t)portMAX_DELAY))
+//         {
+//             bzero(dtmp, BUF_SIZE);
+//             // Check for UART data.
+//             if (event.type == UART_DATA)
+//             {
+//                 uart_read_bytes(UART_NUM, dtmp, event.size, portMAX_DELAY);
+//                 // Process the received data here.
+//                 ESP_LOGI(TAG, "Read from UART: %s\n", dtmp);
+//             }
+//         }
+//     }
+//     free(dtmp);
+//     dtmp = NULL;
+//     vTaskDelete(NULL);
+// }
 
-    // Set UART pins (using default pins for UART0).
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+// void configure_uart()
+// {
+//     uart_config_t uart_config = {
+//         .baud_rate = 115200,
+//         .data_bits = UART_DATA_8_BITS,
+//         .parity = UART_PARITY_DISABLE,
+//         .stop_bits = UART_STOP_BITS_1,
+//         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
 
-    // Create a queue to handle UART events.
-    uart0_queue = xQueueCreate(10, sizeof(uart_event_t));
+//     // Install UART driver.
+//     ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
+//     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
 
-    // Enable RX interrupt.
-    ESP_ERROR_CHECK(uart_enable_rx_intr(UART_NUM));
+//     // Set UART pins (using default pins for UART0).
+//     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    // Create a task to handle UART events.
-    xTaskCreate(uart_event_task, "uart_event_task", 2048, NULL, 12, NULL);
-}
+//     // Create a queue to handle UART events.
+//     uart0_queue = xQueueCreate(10, sizeof(uart_event_t));
+
+//     // Enable RX interrupt.
+//     ESP_ERROR_CHECK(uart_enable_rx_intr(UART_NUM));
+
+//     // Create a task to handle UART events.
+//     xTaskCreate(uart_event_task, "uart_event_task", 2048, NULL, 12, NULL);
+// }
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -107,6 +132,39 @@ static void log_error_if_nonzero(const char *message, int error_code)
     {
         ESP_LOGE(TAG, "Last error %s: 0x%x", message, error_code);
     }
+}
+
+char **splitString(char cadena[])
+{
+    // Inicializar un arreglo dinámico para almacenar las palabras
+    char **palabras = NULL;
+    int numPalabras = 0;
+
+    // Utilizar strtok para dividir la cadena por comas
+    char *token = strtok(cadena, ",");
+
+    // Mientras haya tokens
+    while (token != NULL)
+    {
+        // Incrementar el número de palabras
+        numPalabras++;
+
+        // Reasignar el tamaño del arreglo dinámico
+        palabras = realloc(palabras, sizeof(char *) * numPalabras);
+
+        // Asignar memoria para la nueva palabra y copiar el token
+        palabras[numPalabras - 1] = malloc(strlen(token) + 1);
+        strcpy(palabras[numPalabras - 1], token);
+
+        // Obtener el siguiente token
+        token = strtok(NULL, ",");
+    }
+
+    // Agregar un elemento nulo al final del arreglo para indicar el final
+    palabras = realloc(palabras, sizeof(char *) * (numPalabras + 1));
+    palabras[numPalabras] = NULL;
+
+    return palabras;
 }
 
 /*
@@ -141,34 +199,68 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         msg_id = esp_mqtt_client_subscribe(client, gameTopic, 0);
         // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
         //  login to game
-        snprintf(messageBuffer, sizeof(messageBuffer), "%s,%d %d,%d", playerName, raquetaPosX, raquetaPosY, puntos);
+        snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
         msg_id = esp_mqtt_client_publish(client, sesionTopic, messageBuffer, 0, 0, 0);
 
         break;
     case MQTT_EVENT_DATA:
-        // Guardar el TOPIC en una variable
+        // FILTRA TOPIC Y DATOS ENVIADOS
         snprintf(topic_buffer, sizeof(topic_buffer), "%.*s", event->topic_len, event->topic);
-        //printf("TOPIC=%s\r\n", topic_buffer);
-
         snprintf(data_buffer, sizeof(data_buffer), "%.*s", event->data_len, event->data);
-       // printf("DATA=%s\r\n", data_buffer);
+        char **data_payload = splitString(data_buffer);
 
-        if (strcmp(topic_buffer, gameTopic) == 0)
+        if (!strcmp(topic_buffer, gameTopic))
         {
-            ESP_LOGI(TAG, "game topic: %s", data_buffer);
-        }
-
-        if (strcmp(topic_buffer, sesionTopic) == 0)
-        {
-            playersOnline++;
-            ESP_LOGI(TAG, "Players online: %d", playersOnline);
-
-            if (playersOnline > 2)
+            ESP_LOGI(TAG, "%s", data_payload[0]);
+            if (!strcmp(data_payload[0], "GAMEON"))
             {
                 gameOnFlag = true;
             }
+
+            if (strcmp(data_payload[NAME_INDEX], me.name))
+            {
+                rival.posRaqueta = atoi(data_payload[RAQUETA_POS_INDEX]);
+                rival.puntos = atoi(data_payload[POINTS_INDEX]);
+                rival.pelotaX = atoi(data_payload[PELOTA_POS_X]);
+                rival.pelotaY = atoi(data_payload[PELOTA_POS_Y]);
+            }
+
+            // free(data_payload[NAME_INDEX]); // Liberar la memoria de cada palabra
+            // free(data_payload[RAQUETA_POS_INDEX]);
+            // free(data_payload[POINTS_INDEX]);
+            // free(data_payload[PELOTA_POS_X]);
+            // free(data_payload[PELOTA_POS_Y]);
         }
 
+        if (!strcmp(topic_buffer, sesionTopic))
+        {
+            if (!strcmp(data_payload[LOGIN_STATE_INDEX], "ON") && strcmp(data_payload[NAME_INDEX], me.name))
+            {
+                
+                ESP_LOGI(TAG, "Rival connected: %s", data_payload[NAME_INDEX]);
+            }
+            // si es que el otro jugador cierra sesion decrementa el numero de jugadores
+            if (!strcmp(data_payload[LOGIN_STATE_INDEX], "OFF"))
+            {
+                playersOnline--;
+                sprintf(rival.name, 1, NULL);
+                rival.puntos = 0;
+                rival.posRaqueta = 1;
+                rival.pelotaX = NULL;
+                rival.pelotaY = NULL;
+            }
+            // si hay 2 jugadores en la sesion el juego inicia
+            if (playersOnline > 1)
+            {
+                gameOnFlag = true;
+            }
+            else
+            {
+                gameOnFlag = false;
+            }
+        }
+
+        // free(data_payload);
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -184,23 +276,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "Other event id:%d", event->event_id);
         break;
     }
-}
-
-void initializeGameBoard()
-{
-    int i = 0;
-    int j = 0;
-    for (int i = 0; i < BOARD_LEN; i++)
-    {
-        for (int j = 0; j < BOARD_LEN; j++)
-        {
-            gameBoard[i][j] = 0;
-        }
-    }
-
-    // POSICION DE RAQUETA POR DEFAULT EN LA ESQUINA INFERIOR IZQUIERDA
-    gameBoard[BOARD_LEN][0] = 1;
-    gameBoard[BOARD_LEN - 1][0] = 1;
 }
 
 static void mqtt_app_start(void)
@@ -222,11 +297,22 @@ void vTaskGameboard()
     {
         if (gameOnFlag)
         {
+            ESP_LOGI(TAG, "Player: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", rival.name, rival.state, rival.posRaqueta, rival.puntos, rival.pelotaX, rival.pelotaY);
+            ESP_LOGI(TAG, "Player: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
 
-            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%d %d,%d", playerName, raquetaPosX, raquetaPosY, puntos);
-            msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer,0,1,0);
+            //          uint32_t adc_value = adc1_get_raw(ADC_CHANNEL);
+            // Print the ADC value
+            //            printf("ADC Value: %u\n", adc_value);
+
+            // You can convert this ADC value to a voltage if you know the reference voltage and the ADC resolution
+            // For example, if the reference voltage is 3.3V and the ADC resolution is 12 bits:
+            //        float voltage = adc_value * (3.3 / ((1 << 12) - 1));
+            //      printf("Voltage: %.2fV\n", voltage);
+
+            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
+            msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 1, 0);
         }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 }
 
@@ -253,11 +339,18 @@ void app_main(void)
      * examples/protocols/README.md for more information about this function.
      */
 
-    // Configure UART.
-    configure_uart();
-
+    // Configure UART
+    uartInit(PC_UART_PORT, 115200, 3, 0, 1, PC_UART_TX_PIN, PC_UART_RX_PIN);
     ESP_ERROR_CHECK(example_connect());
 
+    // configure_adc();
+    // configure_gpio();
+    char data[40];
+    ESP_LOGI(TAG, "Nombre: ");
+
+    uartGets(PC_UART_PORT, data);
+    ESP_LOGI(TAG, "Name %s", data);
+    strcpy(me.name, data);
     mqtt_app_start();
     xTaskCreatePinnedToCore(vTaskGameboard, "vTaskGameboard_task", 4096, NULL, 10, &vTaskGameboard_handler, 1);
 }
