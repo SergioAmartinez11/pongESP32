@@ -74,8 +74,6 @@ esp_mqtt_client_handle_t client;
 
 #define ADC_CHANNEL ADC1_CHANNEL_0
 
-#define BUTTON_GPIO_12 GPIO_NUM_12
-#define BUTTON_GPIO_13 GPIO_NUM_13
 
 // void uart_event_task(void *pvParameters)
 // {
@@ -202,7 +200,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
         //  login to game
         snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d, %d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_OFF_FLAG);
-        msg_id = esp_mqtt_client_publish(client, sesionTopic, messageBuffer, 0, 0, 0);
+        msg_id = esp_mqtt_client_publish(client, sesionTopic, messageBuffer, 0, 1, 0);
 
         break;
     case MQTT_EVENT_DATA:
@@ -211,9 +209,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         snprintf(data_buffer, sizeof(data_buffer), "%.*s", event->data_len, event->data);
         char **data_payload = splitString(data_buffer);
 
-        if (!strcmp(topic_buffer, gameTopic))
+
+        //escucha siempre al rival
+        if (!strcmp(topic_buffer, gameTopic) && strcmp(data_payload[NAME_INDEX], me.name))
         {
-            ESP_LOGI(TAG, "%s", data_payload[0]);
             if (atoi(data_payload[GAME_STATUS_INDEX]) == GAME_ON_FLAG)
             {
                 gameOnFlag = true;
@@ -224,6 +223,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 gameOnFlag = false;
             }
 
+            rival.posRaqueta = atoi(data_payload[RAQUETA_POS_INDEX]);
+            rival.puntos = atoi(data_payload[POINTS_INDEX]);
+            rival.pelotaX = atoi(data_payload[PELOTA_POS_X]);
+            rival.pelotaY = atoi(data_payload[PELOTA_POS_Y]);
+            strcpy(rival.state, data_payload[LOGIN_STATE_INDEX]); 
 
         }
 
@@ -233,27 +237,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             {
                 ESP_LOGI(TAG, "Rival connected: %s", data_payload[NAME_INDEX]);
                 snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
-                msg_id = esp_mqtt_client_publish(client, sesionTopic, messageBuffer, 0, 0, 0);
+                msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 1, 0);
             }
-            // si es que el otro jugador cierra sesion decrementa el numero de jugadores
-            if (!strcmp(data_payload[LOGIN_STATE_INDEX], "OFF"))
-            {
-                playersOnline--;
-                sprintf(rival.name, 1, NULL);
-                rival.puntos = 0;
-                rival.posRaqueta = 1;
-                rival.pelotaX = NULL;
-                rival.pelotaY = NULL;
-            }
-            // si hay 2 jugadores en la sesion el juego inicia
-            if (playersOnline > 1)
-            {
-                gameOnFlag = true;
-            }
-            else
-            {
-                gameOnFlag = false;
-            }
+
         }
 
         // free(data_payload);
@@ -305,10 +291,10 @@ void vTaskGameboard()
             //        float voltage = adc_value * (3.3 / ((1 << 12) - 1));
             //      printf("Voltage: %.2fV\n", voltage);
 
-            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
+            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
             msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 0, 0);
         }
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
