@@ -33,6 +33,7 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "myUart.h"
+#include "esp_adc_cal.h"
 
 #define BOARD_LEN 8
 #define NAME_INDEX 0
@@ -72,59 +73,70 @@ TaskHandle_t vTaskGameboard_handler = NULL;
 QueueHandle_t uart0_queue;
 esp_mqtt_client_handle_t client;
 
-#define ADC_CHANNEL ADC1_CHANNEL_0
+#define DEFAULT_VREF 1100 // Use adc2_vref_to_gpio() to obtain a better estimate
+#define NO_OF_SAMPLES 64  // Multisampling
 
+static esp_adc_cal_characteristics_t *adc_chars;
+#if CONFIG_IDF_TARGET_ESP32
+static const adc_channel_t channel = ADC_CHANNEL_6; // GPIO34 if ADC1, GPIO14 if ADC2
+static const adc_bits_width_t width = ADC_WIDTH_BIT_12;
+#elif CONFIG_IDF_TARGET_ESP32S2
+static const adc_channel_t channel = ADC_CHANNEL_6; // GPIO7 if ADC1, GPIO17 if ADC2
+static const adc_bits_width_t width = ADC_WIDTH_BIT_13;
+#endif
+static const adc_atten_t atten = ADC_ATTEN_DB_0;
+static const adc_unit_t unit = ADC_UNIT_1;
 
-// void uart_event_task(void *pvParameters)
-// {
-//     uart_event_t event;
-//     size_t buffered_size;
-//     uint8_t *dtmp = (uint8_t *)malloc(BUF_SIZE);
-//     for (;;)
-//     {
-//         // Waiting for UART event.
-//         if (xQueueReceive(uart0_queue, (void *)&event, (TickType_t)portMAX_DELAY))
-//         {
-//             bzero(dtmp, BUF_SIZE);
-//             // Check for UART data.
-//             if (event.type == UART_DATA)
-//             {
-//                 uart_read_bytes(UART_NUM, dtmp, event.size, portMAX_DELAY);
-//                 // Process the received data here.
-//                 ESP_LOGI(TAG, "Read from UART: %s\n", dtmp);
-//             }
-//         }
-//     }
-//     free(dtmp);
-//     dtmp = NULL;
-//     vTaskDelete(NULL);
-// }
+static void check_efuse(void)
+{
+#if CONFIG_IDF_TARGET_ESP32
+    // Check if TP is burned into eFuse
+    if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_TP) == ESP_OK)
+    {
+        printf("eFuse Two Point: Supported\n");
+    }
+    else
+    {
+        printf("eFuse Two Point: NOT supported\n");
+    }
+    // Check Vref is burned into eFuse
+    if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_VREF) == ESP_OK)
+    {
+        printf("eFuse Vref: Supported\n");
+    }
+    else
+    {
+        printf("eFuse Vref: NOT supported\n");
+    }
+#elif CONFIG_IDF_TARGET_ESP32S2
+    if (esp_adc_cal_check_efuse(ESP_ADC_CAL_VAL_EFUSE_TP) == ESP_OK)
+    {
+        printf("eFuse Two Point: Supported\n");
+    }
+    else
+    {
+        printf("Cannot retrieve eFuse Two Point calibration values. Default calibration values will be used.\n");
+    }
+#else
+#error "This example is configured for ESP32/ESP32S2."
+#endif
+}
 
-// void configure_uart()
-// {
-//     uart_config_t uart_config = {
-//         .baud_rate = 115200,
-//         .data_bits = UART_DATA_8_BITS,
-//         .parity = UART_PARITY_DISABLE,
-//         .stop_bits = UART_STOP_BITS_1,
-//         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
-
-//     // Install UART driver.
-//     ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
-//     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
-
-//     // Set UART pins (using default pins for UART0).
-//     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-
-//     // Create a queue to handle UART events.
-//     uart0_queue = xQueueCreate(10, sizeof(uart_event_t));
-
-//     // Enable RX interrupt.
-//     ESP_ERROR_CHECK(uart_enable_rx_intr(UART_NUM));
-
-//     // Create a task to handle UART events.
-//     xTaskCreate(uart_event_task, "uart_event_task", 2048, NULL, 12, NULL);
-// }
+static void print_char_val_type(esp_adc_cal_value_t val_type)
+{
+    if (val_type == ESP_ADC_CAL_VAL_EFUSE_TP)
+    {
+        printf("Characterized using Two Point Value\n");
+    }
+    else if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF)
+    {
+        printf("Characterized using eFuse Vref\n");
+    }
+    else
+    {
+        printf("Characterized using Default Vref\n");
+    }
+}
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -209,8 +221,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         snprintf(data_buffer, sizeof(data_buffer), "%.*s", event->data_len, event->data);
         char **data_payload = splitString(data_buffer);
 
-
-        //escucha siempre al rival
+        // escucha siempre al rival
         if (!strcmp(topic_buffer, gameTopic) && strcmp(data_payload[NAME_INDEX], me.name))
         {
             if (atoi(data_payload[GAME_STATUS_INDEX]) == GAME_ON_FLAG)
@@ -218,7 +229,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 gameOnFlag = true;
             }
 
-            if(atoi(data_payload[GAME_STATUS_INDEX]) == GAME_OFF_FLAG)
+            if (atoi(data_payload[GAME_STATUS_INDEX]) == GAME_OFF_FLAG)
             {
                 gameOnFlag = false;
             }
@@ -227,8 +238,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             rival.puntos = atoi(data_payload[POINTS_INDEX]);
             rival.pelotaX = atoi(data_payload[PELOTA_POS_X]);
             rival.pelotaY = atoi(data_payload[PELOTA_POS_Y]);
-            strcpy(rival.state, data_payload[LOGIN_STATE_INDEX]); 
-
+            strcpy(rival.state, data_payload[LOGIN_STATE_INDEX]);
+            strcpy(rival.name, data_payload[NAME_INDEX]);
         }
 
         if (!strcmp(topic_buffer, sesionTopic))
@@ -239,7 +250,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
                 msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 1, 0);
             }
-
         }
 
         // free(data_payload);
@@ -279,19 +289,58 @@ void vTaskGameboard()
     {
         if (gameOnFlag)
         {
-            ESP_LOGI(TAG, "Player: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", rival.name, rival.state, rival.posRaqueta, rival.puntos, rival.pelotaX, rival.pelotaY);
-            ESP_LOGI(TAG, "Player: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
+            ESP_LOGI(TAG, "Rival: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", rival.name, rival.state, rival.posRaqueta, rival.puntos, rival.pelotaX, rival.pelotaY);
+            ESP_LOGI(TAG, "Me: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY);
 
-            //          uint32_t adc_value = adc1_get_raw(ADC_CHANNEL);
-            // Print the ADC value
-            //            printf("ADC Value: %u\n", adc_value);
+            int adc_reading = 0;
+            // Multisampling
+            for (int i = 0; i < NO_OF_SAMPLES; i++)
+            {
+                if (unit == ADC_UNIT_1)
+                {
+                    adc_reading += adc1_get_raw((adc1_channel_t)channel);
+                }
+                else
+                {
+                    int raw;
+                    adc2_get_raw((adc2_channel_t)channel, width, &raw);
+                    adc_reading += raw;
+                }
+            }
+            adc_reading /= NO_OF_SAMPLES;
+            // Convert adc_reading to voltage in mV
+            int voltage = esp_adc_cal_raw_to_voltage(adc_reading, adc_chars);
 
-            // You can convert this ADC value to a voltage if you know the reference voltage and the ADC resolution
-            // For example, if the reference voltage is 3.3V and the ADC resolution is 12 bits:
-            //        float voltage = adc_value * (3.3 / ((1 << 12) - 1));
-            //      printf("Voltage: %.2fV\n", voltage);
+            if (voltage > 900)
+            {
+                me.posRaqueta += 1;
+            }
+            if (voltage < 900)
+            {
+                me.posRaqueta -= 1;
+            }
 
-            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
+            if (me.posRaqueta < 1)
+            {
+                me.posRaqueta = 1;
+            }
+            if (me.posRaqueta > 8)
+            {
+                me.posRaqueta = 8;
+            }
+
+            if((me.posRaqueta == pelotaY) && (pelotaX == 1))
+            {
+                //contacto con mi raqueta
+
+            }
+
+            if((me.posRaqueta != peltoaY) && (pelotaX == 0))
+            {
+                //no hubo contacto, el rival gana un punto
+            }
+
+            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, voltage, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
             msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 0, 0);
         }
         vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -300,10 +349,6 @@ void vTaskGameboard()
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "[APP] Startup..");
-    ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
-    ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
-
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set("mqtt_client", ESP_LOG_VERBOSE);
     esp_log_level_set("MQTT_EXAMPLE", ESP_LOG_VERBOSE);
@@ -325,8 +370,25 @@ void app_main(void)
     uartInit(PC_UART_PORT, 115200, 3, 0, 1, PC_UART_TX_PIN, PC_UART_RX_PIN);
     ESP_ERROR_CHECK(example_connect());
 
-    // configure_adc();
-    // configure_gpio();
+    // config ADC
+    check_efuse();
+
+    // Configure ADC
+    if (unit == ADC_UNIT_1)
+    {
+        adc1_config_width(width);
+        adc1_config_channel_atten(channel, atten);
+    }
+    else
+    {
+        adc2_config_channel_atten((adc2_channel_t)channel, atten);
+    }
+
+    // Characterize ADC
+    adc_chars = calloc(1, sizeof(esp_adc_cal_characteristics_t));
+    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
+    print_char_val_type(val_type);
+
     char data[40];
     ESP_LOGI(TAG, "Nombre: ");
 

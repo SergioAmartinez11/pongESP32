@@ -1,7 +1,7 @@
 {
     "version":            "1",
     "project_name":       "mqtt_tcp",
-    "project_version":    "f659622-dirty",
+    "project_version":    "bb41164-dirty",
     "project_path":       "C:/Users/sergi/development/pongESP32/tcp",
     "idf_path":           "C:/Users/sergi/esp/esp-idf",
     "build_dir":          "C:/Users/sergi/development/pongESP32/tcp/build",
