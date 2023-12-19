@@ -1,10 +1,5 @@
-/* MQTT (over TCP) Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
+/* JUEGO PONG
+TABLERO 8x8
 */
 
 #include <stdio.h>
@@ -62,6 +57,8 @@ char *gameTopic = "v1/gaming";
 int gameBoard[BOARD_LEN][BOARD_LEN];
 bool gameOnFlag = false;
 int playersOnline = 0;
+bool isYourTurn = false;
+bool singleCall = true;
 
 player_data_t me = {"playerA", "ON", 1, 0, 0, 0};
 player_data_t rival;
@@ -249,6 +246,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGI(TAG, "Rival connected: %s", data_payload[NAME_INDEX]);
                 snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
                 msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 1, 0);
+                isYourTurn = true;
             }
         }
 
@@ -287,6 +285,24 @@ void vTaskGameboard()
     int messageBuffer[100];
     while (1)
     {
+
+        if (singleCall && !isYourTurn)
+        {
+            singleCall = false;
+
+            char data[40];
+            ESP_LOGI(TAG, "Nombre: ");
+            uartGets(PC_UART_PORT, data);
+            strcpy(me.name, data);
+
+            ESP_LOGI(TAG, "Posicion de pelota en Y: ");
+            uartGets(PC_UART_PORT, data);
+            strcpy(me.pelotaY, data);
+            // la raqueta tambien tiene la misma posicion inicial que la pelota
+            me.pelotaY = atoi(data);
+            me.posRaqueta = atoi(data);
+        }
+
         if (gameOnFlag)
         {
             ESP_LOGI(TAG, "Rival: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", rival.name, rival.state, rival.posRaqueta, rival.puntos, rival.pelotaX, rival.pelotaY);
@@ -329,15 +345,14 @@ void vTaskGameboard()
                 me.posRaqueta = 8;
             }
 
-            if((me.posRaqueta == pelotaY) && (pelotaX == 1))
+            if ((me.posRaqueta == me.pelotaY) && (me.pelotaX == 1))
             {
-                //contacto con mi raqueta
-
+                // contacto con mi raqueta
             }
 
-            if((me.posRaqueta != peltoaY) && (pelotaX == 0))
+            if ((me.posRaqueta != me.pelotaY) && (me.pelotaX < 1))
             {
-                //no hubo contacto, el rival gana un punto
+                // no hubo contacto, el rival gana un punto
             }
 
             snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, voltage, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
@@ -388,13 +403,6 @@ void app_main(void)
     adc_chars = calloc(1, sizeof(esp_adc_cal_characteristics_t));
     esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
     print_char_val_type(val_type);
-
-    char data[40];
-    ESP_LOGI(TAG, "Nombre: ");
-
-    uartGets(PC_UART_PORT, data);
-    ESP_LOGI(TAG, "Name %s", data);
-    strcpy(me.name, data);
     mqtt_app_start();
     xTaskCreatePinnedToCore(vTaskGameboard, "vTaskGameboard_task", 4096, NULL, 10, &vTaskGameboard_handler, 1);
 }
