@@ -54,11 +54,17 @@ typedef struct
 static const char *TAG = "MQTT_EXAMPLE";
 char *sesionTopic = "v1/playersOnline";
 char *gameTopic = "v1/gaming";
-int gameBoard[BOARD_LEN][BOARD_LEN];
+char *startingTopic = "v1/starting" int gameBoard[BOARD_LEN][BOARD_LEN];
 bool gameOnFlag = false;
 int playersOnline = 0;
 bool isYourTurn = false;
 bool singleCall = true;
+
+int posPelotaX = 0;
+int posPelotaY = 0;
+
+int directionX = 1;
+int directionY = 1;
 
 player_data_t me = {"playerA", "ON", 1, 0, 0, 0};
 player_data_t rival;
@@ -218,6 +224,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         snprintf(data_buffer, sizeof(data_buffer), "%.*s", event->data_len, event->data);
         char **data_payload = splitString(data_buffer);
 
+        if (!strcmp(topic_buffer, startingTopic) && strcmp(data_payload[0], me.name))
+        {
+            posPelotaX = data_payload[1];
+            posPelotaY = data_payload[2];
+            gameOnFlag = true;
+        }
         // escucha siempre al rival
         if (!strcmp(topic_buffer, gameTopic) && strcmp(data_payload[NAME_INDEX], me.name))
         {
@@ -243,10 +255,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         {
             if (!strcmp(data_payload[LOGIN_STATE_INDEX], "ON") && strcmp(data_payload[NAME_INDEX], me.name))
             {
+                // soy el jugador 1 entonces manda posicion inicial
                 ESP_LOGI(TAG, "Rival connected: %s", data_payload[NAME_INDEX]);
-                snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, me.posRaqueta, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
-                msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 1, 0);
-                isYourTurn = true;
+                ESP_LOGI(TAG, "Game starting...");
+                snprintf(messageBuffer, sizeof(messageBuffer), "%s,%d,%d", me.name, posPelotaX, posPelotaY);
+                msg_id = esp_mqtt_client_publish(client, startingTopic, messageBuffer, 0, 1, 0);
+                gameOnFlag = true;
             }
         }
 
@@ -330,6 +344,19 @@ void vTaskGameboard()
             if ((me.posRaqueta == me.pelotaY) && (me.pelotaX == 1))
             {
                 // contacto con mi raqueta
+                directionX = (-1) * directionX;
+                posPelotaX = posPelotaX + directionX;
+                posPelotaY = posPelotaY + directionY;
+            }
+
+            if (posPelotaY > 7)
+            {
+                directionY = (-1) * directionY
+            }
+
+            if (posPelotaY < 1)
+            {
+                directionY = (-1) * directionY
             }
 
             if ((me.posRaqueta != me.pelotaY) && (me.pelotaX < 1))
@@ -337,7 +364,7 @@ void vTaskGameboard()
                 // no hubo contacto, el rival gana un punto
             }
 
-            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, voltage, me.puntos, me.pelotaX, me.pelotaY, GAME_ON_FLAG);
+            snprintf(messageBuffer, sizeof(messageBuffer), "%s,%s,%d,%d,%d,%d,%d", me.name, me.state, voltage, me.puntos, posPelotaX, posPelotaY, GAME_ON_FLAG);
             msg_id = esp_mqtt_client_publish(client, gameTopic, messageBuffer, 0, 0, 0);
         }
         vTaskDelay(1000 / portTICK_PERIOD_MS);
