@@ -285,24 +285,6 @@ void vTaskGameboard()
     int messageBuffer[100];
     while (1)
     {
-
-        if (singleCall && !isYourTurn)
-        {
-            singleCall = false;
-
-            char data[40];
-            ESP_LOGI(TAG, "Nombre: ");
-            uartGets(PC_UART_PORT, data);
-            strcpy(me.name, data);
-
-            ESP_LOGI(TAG, "Posicion de pelota en Y: ");
-            uartGets(PC_UART_PORT, data);
-            strcpy(me.pelotaY, data);
-            // la raqueta tambien tiene la misma posicion inicial que la pelota
-            me.pelotaY = atoi(data);
-            me.posRaqueta = atoi(data);
-        }
-
         if (gameOnFlag)
         {
             ESP_LOGI(TAG, "Rival: %s, Sate: %s, Pad position: %d, Points: %d, Pong: <%d> <%d>", rival.name, rival.state, rival.posRaqueta, rival.puntos, rival.pelotaX, rival.pelotaY);
@@ -403,6 +385,19 @@ void app_main(void)
     adc_chars = calloc(1, sizeof(esp_adc_cal_characteristics_t));
     esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
     print_char_val_type(val_type);
+
+    char data[40];
+    ESP_LOGI(TAG, "Nombre: ");
+    uartGets(PC_UART_PORT, data);
+    strcpy(me.name, data);
+
+    ESP_LOGI(TAG, "Posicion de pelota en Y: ");
+    uartGets(PC_UART_PORT, data);
+    strcpy(me.pelotaY, data);
+    // la raqueta tambien tiene la misma posicion inicial que la pelota
+    me.pelotaY = atoi(data);
+    me.posRaqueta = atoi(data);
+
     mqtt_app_start();
     xTaskCreatePinnedToCore(vTaskGameboard, "vTaskGameboard_task", 4096, NULL, 10, &vTaskGameboard_handler, 1);
 }
